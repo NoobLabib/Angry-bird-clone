@@ -1,5 +1,4 @@
 
-
 #include "iGraphics.h"
 #include "iSound.h"
 #include <math.h>
@@ -7,6 +6,7 @@
 #include <time.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <windows.h>
 
 #define WIN_W 1550
 #define WIN_H 1000
@@ -15,12 +15,12 @@
 #define BIRD_HEIGHT 60
 #define BLOCK_WIDTH 30
 #define BLOCK_HEIGHT 30
-#define LEADERBOARD 3
 #define MAX_NAME_LEN 100
 #define NUM_BIRDS 5
 
 #define STATE_COVER -1
 #define STATE_MENU 0
+#define STATE_LEVEL_SELECT 1
 #define STATE_HELP 2
 #define STATE_LEADERBOARD 3
 #define STATE_GAMEOVER 4
@@ -30,11 +30,13 @@
 #define STATE_LEVEL1 10
 #define STATE_LEVEL2 11
 #define STATE_LEVELCOMPLETE 12
+#define STATE_VICTORY 13
 
 // Game state
 int gameState = STATE_COVER;
 int coverTimer = 0;
 int gameLevel = 1;
+int selectedLevel = 1;
 
 // Bird and physics
 double velocity = 90;
@@ -81,7 +83,6 @@ bool dragging = false;
 int dragX = 0, dragY = 0;
 
 // Sound
-bool soundOn = true;
 int bgmChannel = -1;
 
 // Block struct
@@ -199,16 +200,12 @@ void initBlocks2()
 {
     blockCount = 0;
     addBlockGrid(700, 350, 5, 3, BLOCK_WIDTH, BLOCK_HEIGHT, 1);
-    addPyramid(850, 350, 3, BLOCK_WIDTH, BLOCK_HEIGHT, 1);
+    addPyramid(800, 300, 3, BLOCK_WIDTH, BLOCK_HEIGHT, 1);
     movingBlocks(600, 500, BLOCK_WIDTH, BLOCK_HEIGHT, 1, 4);
-    fallingBlock(400, 800, BLOCK_WIDTH, BLOCK_HEIGHT, 1, -4, 1);
     fallingBlock(600, 800, BLOCK_WIDTH, BLOCK_HEIGHT, 1, -4, 1);
     fallingBlock(800, 600, BLOCK_WIDTH, BLOCK_HEIGHT, 1, -4, 1);
     fallingBlock(1000, 800, BLOCK_WIDTH, BLOCK_HEIGHT, 1, -4, 1);
-    fallingBlock(500, 350, BLOCK_WIDTH, BLOCK_HEIGHT, 1, 4, 1);
     movingBlocks(1200, 600, BLOCK_WIDTH, BLOCK_HEIGHT, 1, -4);
-    movingBlocks(300, 600, BLOCK_WIDTH, BLOCK_HEIGHT, 1, 4);
-    movingBlocks(1000, 500, BLOCK_WIDTH, BLOCK_HEIGHT, 1, -4);
     movingBlocks(400, 500, BLOCK_WIDTH, BLOCK_HEIGHT, 1, 4);
 }
 
@@ -238,6 +235,73 @@ void drawSlingshotPuller()
     }
 }
 
+void showLeaderBoard()
+{
+    typedef struct{
+        char name[MAX_NAME_LEN];
+        int score;
+    } Entry;
+    Entry entries[100];
+    int count = 0;
+    
+    FILE *file = fopen("assets/leaderboard.txt", "r");
+    if(!file) {
+        // If file doesn't exist in assets/, try bin/assets/
+        file = fopen("bin/assets/leaderboard.txt", "r");
+        if(!file) {
+            iSetColor(255, 0, 0);
+            iText(350, 400, "No scores yet!", GLUT_BITMAP_HELVETICA_18);
+            return;
+        }
+    }
+
+    while(fscanf(file, "%s %d", entries[count].name, &entries[count].score) == 2)
+    {
+        count++;
+        if(count >= 100) break;
+    }
+    fclose(file);
+    //Sort descending
+     for(int i=0; i<count - 1; i++){
+        for(int j=i+1; j<count; j++){
+            if(entries[i].score < entries[j].score)
+            {
+                Entry temp = entries[i];
+                entries[i] = entries[j];
+                entries[j] = temp;
+            }
+        }
+     }
+     // Display top 5
+     for(int i=0; i<count && i<5; i++){
+        char line[200];
+        if(i == 0) iSetColor(255, 215, 0);  // Gold
+        else if(i == 1) iSetColor(192, 192, 192);  // Silver
+        else if(i == 2) iSetColor(205, 127, 50);  // Bronze
+        else iSetColor(255, 255, 255);  // White for others
+        sprintf(line, "%d. %s - %d", i+1, entries[i].name, entries[i].score);
+        iText(350, 650-i*30, line, GLUT_BITMAP_HELVETICA_18);
+     }
+}
+
+void saveScore()
+{
+    static bool scoreSaved = false;
+    if (scoreSaved) return;  // Prevent multiple saves of the same score
+    
+    FILE *file = fopen("assets/leaderboard.txt", "a");
+    if(file){
+        fprintf(file, "%s %d\n", playerName, score);
+        fclose(file);
+        scoreSaved = true;
+    }
+    
+    // Reset the flag when starting a new game or selecting level
+    if (gameState == STATE_LEVEL_SELECT || gameState == STATE_NAMEINPUT) {
+        scoreSaved = false;
+    }
+}
+
 void iDraw()
 {
     iClear();
@@ -250,7 +314,16 @@ void iDraw()
         int b = 50 + rand() % 200;
         iSetColor(r, g, b);
         iText(WIN_W / 2 - 30, 60, "Loading...", GLUT_BITMAP_TIMES_ROMAN_24);
+
+        // Try to play sound again if it's not playing
+        if (bgmChannel == -1) {
+            bgmChannel = iPlaySound("assets/sounds/gameBGM.wav", true, 100);
+            if (bgmChannel == -1) {
+                bgmChannel = iPlaySound("bin/assets/sounds/gameBGM.wav", true, 100);
+            }
+        }
     }
+
     else if (gameState == STATE_MENU)
     {
         iShowImage(0, 0, "assets/images/MenuCover.jpg");
@@ -295,14 +368,31 @@ void iDraw()
         iText(x + 75, y5 + 15, "EXIT", GLUT_BITMAP_HELVETICA_18);
 
         // Sound button (top-right)
-        int soundBtnX = WIN_W - 80, soundBtnY = WIN_H - 80, soundBtnW = 60, soundBtnH = 60;
-        iSetColor(200, 200, 0);
-        iFilledCircle(soundBtnX + 30, soundBtnY + 30, 30);
+        
+    }
+    else if(gameState == STATE_LEVEL_SELECT)
+    {
+        //Level selection
+        iShowImage(0, 0, "assets/images/1MAnuBackGround.bmp");
+        int btnX = 200, btnY = 50, x=660;
+        int y1 = 400, y2 = 300;
         iSetColor(0, 0, 0);
-        if (soundOn)
-            iText(soundBtnX + 10, soundBtnY + 25, "ON", GLUT_BITMAP_HELVETICA_18);
-        else
-            iText(soundBtnX + 10, soundBtnY + 25, "OFF", GLUT_BITMAP_HELVETICA_18);
+        iText(600, 700, "SELECT LEVEL", GLUT_BITMAP_TIMES_ROMAN_24);
+        //Level 1
+        iSetColor(100, 0, 0);
+        iFilledRectangle(x + 5, y1 - 5, btnX, btnY);
+        iSetColor(200, 0, 0);
+        iFilledRectangle(x, y1, btnX, btnY);
+        iSetColor(255, 255, 255);
+        iText(x + 75, y1 + 15, "LEVEL 1", GLUT_BITMAP_HELVETICA_18);
+        //Level 2
+        iSetColor(100, 100, 0);
+        iFilledRectangle(x + 5, y2 - 5, btnX, btnY);
+        iSetColor(200, 200, 0);
+        iFilledRectangle(x, y2, btnX, btnY);
+        iSetColor(255, 255, 255);
+        iText(x + 75, y2 + 15, "LEVEL 2", GLUT_BITMAP_HELVETICA_18);
+
     }
     else if (gameState == STATE_NAMEINPUT)
     {
@@ -455,42 +545,20 @@ void iDraw()
         int b = 50 + rand() % 200;
         iSetColor(r, g, b);
         iText(330, 720, "LEADERBOARD", GLUT_BITMAP_TIMES_ROMAN_24);
-        iSetColor(0, 0, 0);
-        iFilledRectangle(300, 90, 900, 600);
 
         // Show all leaderboard entries in white
-        FILE *file = fopen("bin\\assets\\leaderboard.txt", "r");
-        if (!file)
-        {
-            iSetColor(255, 255, 255);
-            iText(600, 200, "No leaderboard data available.", GLUT_BITMAP_HELVETICA_18);
-        }
-        else
-        {
-            char name[100];
-            int score;
-            int i = 0;
-            iSetColor(255, 255, 255);
-            while (fscanf(file, "%s %d", name, &score) == 2)
-            {
-                char line[200];
-                sprintf(line, "%d. %s - %d", i + 1, name, score);
-                iText(350, 650 - i * 30, line, GLUT_BITMAP_HELVETICA_18);
-                i++;
-                if (650 - i * 30 < 100)
-                    break; // Prevent overflow
-            }
-            fclose(file);
-        }
-        iSetColor(255, 255, 255);
-        iText(60, 60, "Press B to go back", GLUT_BITMAP_HELVETICA_18);
+       iSetColor(255, 255, 255);
+       showLeaderBoard();
+       
+       iSetColor(200, 0, 0);
+       iText(60, 60, "Press B to go back", GLUT_BITMAP_HELVETICA_18);
     }
     else if (gameState == STATE_HELP)
     {
         iSetColor(0, 0, 0);
         iFilledRectangle(0, 0, WIN_W, WIN_H);
         iShowImage(0, 0, "assets/images/helpBackGround.bmp");
-        iSetColor(255, 255, 255);
+        iSetColor(0, 0, 0);
         iText(400, 600, "Use arrow keys to set angle and speed.", GLUT_BITMAP_HELVETICA_18);
         iText(400, 550, "Left click to shoot. R to reset. Q to quit.", GLUT_BITMAP_HELVETICA_18);
         iText(400, 500, "B to return to menu.", GLUT_BITMAP_HELVETICA_18);
@@ -512,6 +580,8 @@ void iDraw()
         iText(900, 600, "Saiful Haque Labib", GLUT_BITMAP_HELVETICA_18);
         iText(900, 550, "BUET CSE'24", GLUT_BITMAP_HELVETICA_18);
         iText(900, 500, "Student ID: 2405164", GLUT_BITMAP_HELVETICA_18);
+        iText(400, 400, "Supervised by:", GLUT_BITMAP_HELVETICA_18);
+        iText(400, 350, "Rifat Rahman", GLUT_BITMAP_HELVETICA_18);
         iText(100, 100, "Press B to go back", GLUT_BITMAP_HELVETICA_18);
     }
     else if (gameState == STATE_GAMEOVER)
@@ -520,11 +590,26 @@ void iDraw()
         iFilledRectangle(0, 0, WIN_W, WIN_H);
         iSetColor(255, 0, 0);
         iText(600, 500, "GAME OVER!", GLUT_BITMAP_TIMES_ROMAN_24);
-        iText(600, 450, "Press R to restart or Q to quit", GLUT_BITMAP_HELVETICA_18);
+        iText(600, 450, "Press R to restart or B to go to main menu Q to quit", GLUT_BITMAP_HELVETICA_18);
         iText(600, 400, "Lives: 0", GLUT_BITMAP_HELVETICA_18);
-        // sprintf(scoreText, "Score: %d", score);
-        // iText(600, 350, "Score: %d", scoreText, GLUT_BITMAP_HELVETICA_18);
+
+        char scoreMsg[100];
+        sprintf(scoreMsg, "Final Score: %d", score);
+        iSetColor(255, 0, 0);
+        iText(600, 350, scoreMsg, GLUT_BITMAP_HELVETICA_18);
         iText(100, 100, "Press B to go back", GLUT_BITMAP_HELVETICA_18);
+    }
+    else if(gameState == STATE_VICTORY)
+    {
+        iShowImage(0, 0, "assets/images/victorycover.bmp");
+        iSetColor(255, 215, 0);
+        iText(100, 700, "CONGATULATIONS!", GLUT_BITMAP_TIMES_ROMAN_24);
+
+        char scoreMsg[100];
+        sprintf(scoreMsg, "Final Score: %d", score);
+        iSetColor(0, 0, 0);
+        iText(100, 600, scoreMsg, GLUT_BITMAP_HELVETICA_18);
+        iText(50, 200, "Press 'B' for menu or 'Q' to quit", GLUT_BITMAP_HELVETICA_18);
     }
 }
 
@@ -575,6 +660,7 @@ void ballChange()
         {
             gameOver = true;
             gameState = STATE_GAMEOVER;
+            saveScore();  // Save score when game actually ends
         }
         return;
     }
@@ -593,13 +679,14 @@ void ballChange()
         levelWon = true;
         launched = false;
         ready = false;
-        // Save score only once per level
-        FILE *file = fopen("bin\\assets\\leaderboard.txt", "a");
-        if (file)
-        {
-            fprintf(file, "%s %d\n", playerName, score);
-            fclose(file);
+        // Check for game victory
+        if (gameState == STATE_LEVEL2) {
+            gameState = STATE_VICTORY;
+            saveScore();
+            return;
         }
+        // Save score only once per level
+        saveScore();
     }
 }
 
@@ -645,8 +732,6 @@ void coverTimerFunc()
         if (coverTimer >= 7)
         {
             gameState = STATE_MENU;
-            if (soundOn && bgmChannel == -1)
-                bgmChannel = iPlaySound("bin/assets/sounds/Voicy_Angry burd.mp3", true, 100);
         }
     }
 }
@@ -660,31 +745,11 @@ void iMouse(int button, int state, int mx, int my)
             int btnW = 200, btnH = 50, x = 660;
             int y1 = 500, y2 = 400, y3 = 300, y4 = 200, y5 = 100;
             int soundBtnX = WIN_W - 80, soundBtnY = WIN_H - 80, soundBtnW = 60, soundBtnH = 60;
-            // Sound button
-            if (mx >= soundBtnX && mx <= soundBtnX + soundBtnW && my >= soundBtnY && my <= soundBtnY + soundBtnH)
-            {
-                soundOn = !soundOn;
-                if (soundOn)
-                {
-                    if (bgmChannel == -1)
-                        bgmChannel = iPlaySound("bin/assets/sounds/Voicy_Angry burd.mp3", true, 100);
-                }
-                else
-                {
-                    if (bgmChannel != -1)
-                    {
-                        iStopSound(bgmChannel);
-                        bgmChannel = -1;
-                    }
-                }
-                return;
-            }
+            // Menu buttons continue below
             // Start Game
             if (mx >= x && mx <= x + btnW && my >= y1 && my <= y1 + btnH)
             {
-                gameState = STATE_NAMEINPUT;
-                nameCharIndex = 0;
-                playerName[0] = '\0';
+                gameState = STATE_LEVEL_SELECT;
                 return;
             }
             // Leaderboard
@@ -708,7 +773,28 @@ void iMouse(int button, int state, int mx, int my)
             // Exit
             if (mx >= x && mx <= x + btnW && my >= y5 && my <= y5 + btnH)
             {
+                if (bgmChannel != -1) {
+                    iStopSound(bgmChannel);
+                }
                 exit(0);
+            }
+        }
+        else if(gameState == STATE_LEVEL_SELECT)
+        {
+            //Level select
+            if(mx>=660 && mx<=860 && my>=400 && my<=450)
+            {
+                selectedLevel = 1;
+                gameState = STATE_NAMEINPUT;
+                nameCharIndex = 0;
+                playerName[0] = '\0';
+            }
+            else if(mx>=660 && mx<=860 && my>=300 && my<=350)
+            {
+                selectedLevel = 2;
+                gameState = STATE_NAMEINPUT;
+                nameCharIndex = 0;
+                playerName[0] = '\0';
             }
         }
         else if (gameState == STATE_BIRDSELECT)
@@ -723,19 +809,31 @@ void iMouse(int button, int state, int mx, int my)
                     birdSelectionIndex++;
                     if (birdSelectionIndex == NUM_BIRDS)
                     {
-                        gameState = STATE_LEVEL1;
-                        gameLevel = 1;
-                        score = 0;
-                        lives = 5;
-                        initBlocks1();
-                        initBirds();
-                        resetCurrentBird();
-                        launched = false;
-                        ready = true;
-                        if (bgmChannel != -1)
-                        {
-                            iStopSound(bgmChannel);
-                            bgmChannel = -1;
+                        if(selectedLevel == 1){
+                            gameState = STATE_LEVEL1;
+                            score = 0;
+                            lives = 5;
+                            gameOver = false;
+                            levelWon = false;
+                            initBlocks1();
+                            initBirds();
+                            resetCurrentBird();
+                            launched = false;
+                            ready = true;
+                            dragging = false;
+                        }
+                        else if(selectedLevel == 2){
+                            gameState = STATE_LEVEL2;
+                            score = 0;
+                            lives = 5;
+                            gameOver = false;
+                            levelWon = false;
+                            initBlocks2();
+                            initBirds();
+                            resetCurrentBird();
+                            launched = false;
+                            ready = true;
+                            dragging = false;
                         }
                     }
                 }
@@ -816,6 +914,7 @@ void iKeyboard(unsigned char key)
         if (key == '\r')
         {
             gameState = STATE_BIRDSELECT;
+            gameLevel = selectedLevel;
             birdSelectionIndex = 0;
         }
         else if (key == '\b' && nameCharIndex > 0)
@@ -847,15 +946,9 @@ void iKeyboard(unsigned char key)
         else if (levelWon && gameState == STATE_LEVEL2)
         {
             // Game complete, back to menu
-            FILE *file = fopen("bin\\assets\\leaderboard.txt", "a");
-            if (file)
-            {
-                fprintf(file, "%s %d\n", playerName, score);
-                fclose(file);
-            }
+            saveScore();
             gameState = STATE_MENU;
-            if (soundOn && bgmChannel == -1)
-                bgmChannel = iPlaySound("bin/assets/sounds/Voicy_Angry burd.mp3", true, 100);
+            bgmChannel = iPlaySound("bin/assets/sounds/gameBGM.wav", true, 100);
         }
         else if (gameState == STATE_GAMEOVER)
         {
@@ -889,19 +982,16 @@ void iKeyboard(unsigned char key)
     }
     else if (key == 'q')
     {
-        FILE *file = fopen("bin\\assets\\leaderboard.txt", "a");
-        if (file)
-        {
-            fprintf(file, "%s %d\n", playerName, score);
-            fclose(file);
+        saveScore();
+        if (bgmChannel != -1) {
+            iStopSound(bgmChannel);
         }
         exit(0);
     }
     else if (key == 'b')
     {
         gameState = STATE_MENU;
-        if (soundOn && bgmChannel == -1)
-            bgmChannel = iPlaySound("bin/assets/sounds/Voicy_Angry burd.mp3", true, 100);
+        // State changed to menu
     }
 }
 
@@ -918,17 +1008,23 @@ void iSpecialKeyboard(unsigned char key)
         else if (key == GLUT_KEY_LEFT && velocity > 10)
             velocity -= 1;
     }
-    if (key == GLUT_KEY_END)
+    if (key == GLUT_KEY_END) {
+        if (bgmChannel != -1) {
+            iStopSound(bgmChannel);
+        }
         exit(0);
+    }
 }
 
 int main(int argc, char *argv[])
 {
+    // Ensure console window stays visible
+    ShowWindow(GetConsoleWindow(), SW_SHOW);
+    
     iInitializeSound();
-    iPlaySound("bin/assets/sounds/Voicy_Angry burd.mp3", true, 80);
     glutInit(&argc, argv);
-    iSetTimer(2000, coverTimerFunc);
-    iSetTimer(20, ballChange);
+    iSetTimer(500, coverTimerFunc);
+    iSetTimer(10, ballChange);
     iSetTimer(20, updateBlockPositions);
     srand(time(0));
     initBlocks1();
@@ -936,7 +1032,10 @@ int main(int argc, char *argv[])
         selectedBirdTypes[i] = i;
     initBirds();
 
-    iInitialize(WIN_W, WIN_H, "Angry Birds");
+    iInitialize(WIN_W, WIN_H, "Angry Birds Clone");
+    
+    bgmChannel = iPlaySound("bin/assets/sounds/gameBGM.wav", true, 100);
+    
     // Do NOT call iFreeSound() here; let the OS clean up on exit.
     return 0;
 }
